@@ -2,6 +2,7 @@
 #ifndef __DMA_BUF_IO_H__
 #define __DMA_BUF_IO_H__
 
+#include <linux/completion.h>
 #include <linux/dma-buf.h>
 
 struct dma_buf_io_fence;
@@ -36,7 +37,21 @@ struct dma_buf_io_map {
 	struct percpu_ref		refs;
 
 	struct work_struct		release_work;
+
+	/*
+	 * Set by dma_buf_io_drop_map() only once the map is being torn
+	 * down, after a fence slot has been reserved in the dmabuf's
+	 * reservation object. NULL for the entire time the map is live.
+	 */
 	struct dma_buf_io_fence		*fence;
+
+	/*
+	 * Signaled from dma_buf_io_map_release_work() unconditionally, so
+	 * that dma_buf_io_drop_map() has a way to wait synchronously for
+	 * teardown when it could not publish @fence into the reservation
+	 * object (see the comment there).
+	 */
+	struct completion		release_done;
 	struct dma_buf_io_ctx		*ctx;
 };
 
