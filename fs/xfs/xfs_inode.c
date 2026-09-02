@@ -48,18 +48,42 @@
 
 struct kmem_cache *xfs_inode_cache;
 
+/*
+ * Write stream pool for the data of @ip, or NULL if it has none.  A directory
+ * that passes the realtime flag on to new files uses the realtime pool, so
+ * that streams allocated through it can be set on the files created in it.
+ */
+struct write_stream_pool *
+xfs_inode_write_stream_pool(
+	struct xfs_inode	*ip)
+{
+	struct xfs_mount	*mp = ip->i_mount;
+	bool			rt = XFS_IS_REALTIME_INODE(ip);
+
+	if (S_ISDIR(VFS_I(ip)->i_mode) &&
+	    (ip->i_diflags & XFS_DIFLAG_RTINHERIT) && mp->m_rtdev_targp)
+		rt = true;
+
+	if (!rt)
+		return &mp->m_ddev_targp->bt_stream_pool;
+	if (xfs_has_zoned(mp))
+		return NULL;
+	return &mp->m_rtdev_targp->bt_stream_pool;
+}
+
 /* Number of write streams available to this inode. */
 int
 xfs_inode_max_write_streams(
 	struct xfs_inode	*ip)
 {
+	struct write_stream_pool *pool;
+
 	xfs_assert_ilocked(ip, XFS_ILOCK_SHARED | XFS_ILOCK_EXCL);
 
 	if (xfs_inode_is_filestream(ip))
 		return 0;
-	if (XFS_IS_REALTIME_INODE(ip))
-		return 0;
-	return write_stream_pool_count(&xfs_inode_buftarg(ip)->bt_stream_pool);
+	pool = xfs_inode_write_stream_pool(ip);
+	return pool ? write_stream_pool_count(pool) : 0;
 }
 
 /* Bind the write stream named by @stream_fd to @ip */
@@ -69,19 +93,19 @@ xfs_inode_set_write_stream(
 	int			stream_fd)
 {
 	CLASS(fd, f)(stream_fd);
-	struct xfs_buftarg	*target;
+	struct write_stream_pool *pool;
 	int			id, error = 0;
 
 	if (!fd_file(f))
 		return -EBADF;
 	xfs_ilock(ip, XFS_ILOCK_EXCL);
-	if (XFS_IS_REALTIME_INODE(ip)) {
+	pool = xfs_inode_write_stream_pool(ip);
+	if (!pool) {
 		error = -EINVAL;
 		goto out_unlock;
 	}
 
-	target = xfs_inode_buftarg(ip);
-	id = write_stream_get_id(fd_file(f), &target->bt_stream_pool);
+	id = write_stream_get_id(fd_file(f), pool);
 	if (id < 0) {
 		error = id;
 		goto out_unlock;

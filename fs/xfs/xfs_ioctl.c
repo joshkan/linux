@@ -559,7 +559,8 @@ xfs_ioctl_setattr_xflags(
 
 	/* refuse a filestream/realtime flag change while a stream is attached */
 	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
-	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) || rtflag))
+	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) ||
+	     rtflag != XFS_IS_REALTIME_INODE(ip)))
 		return -EINVAL;
 
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {
@@ -1461,7 +1462,7 @@ xfs_ioc_write_stream_alloc(
 	struct file		*filp)
 {
 	struct xfs_inode	*ip = XFS_I(file_inode(filp));
-	struct xfs_buftarg	*target;
+	struct write_stream_pool *pool;
 	int			max;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -1469,12 +1470,12 @@ xfs_ioc_write_stream_alloc(
 
 	xfs_ilock(ip, XFS_ILOCK_SHARED);
 	max = xfs_inode_max_write_streams(ip);
-	target = xfs_inode_buftarg(ip);
+	pool = xfs_inode_write_stream_pool(ip);
 	xfs_iunlock(ip, XFS_ILOCK_SHARED);
 
 	if (!max)
 		return -EOPNOTSUPP;
-	return write_stream_alloc_fd(&target->bt_stream_pool, filp);
+	return write_stream_alloc_fd(pool, filp);
 }
 
 static int
