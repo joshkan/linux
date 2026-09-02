@@ -368,3 +368,11 @@ void failfs_get_root(struct path *path);
 void __init failfs_init(void);
 bool failfs_mnt(const struct vfsmount *mnt);
 int failfs_current_chdir(void);
+
+/*
+ * fs/write_streams.c
+ */
+struct write_stream_pool;
+int write_stream_alloc_fd(struct write_stream_pool *pool, struct file *file);
+int write_stream_get_id(struct file *file,
+			const struct write_stream_pool *pool);
