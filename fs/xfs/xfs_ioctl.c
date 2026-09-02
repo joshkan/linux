@@ -566,7 +566,8 @@ xfs_ioctl_setattr_xflags(
 	    READ_ONCE(VFS_I(ip)->i_write_stream))
 		return -EINVAL;
 
-	if (rtflag && READ_ONCE(VFS_I(ip)->i_write_stream))
+	if (rtflag != XFS_IS_REALTIME_INODE(ip) &&
+	    READ_ONCE(VFS_I(ip)->i_write_stream))
 		return -EINVAL;
 
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {

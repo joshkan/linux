@@ -51,9 +51,9 @@ struct kmem_cache *xfs_inode_cache;
 /*
  * Number of write streams available to this inode.
  *
- * Filestreams steers locality by a rule of its own, so it cannot honour a
- * stream, and the realtime device has no pool yet.  Called with the inode
- * lock held so that i_diflags reads are stable.
+ * Filestreams steers locality by a rule of its own, and a zoned realtime inode
+ * places by choosing a zone, so neither can honour a stream.  Called with the
+ * inode lock held so that i_diflags reads are stable.
  */
 int
 xfs_inode_max_write_streams(
@@ -63,7 +63,7 @@ xfs_inode_max_write_streams(
 
 	if (xfs_inode_is_filestream(ip))
 		return 0;
-	if (XFS_IS_REALTIME_INODE(ip))
+	if (XFS_IS_REALTIME_INODE(ip) && xfs_has_zoned(ip->i_mount))
 		return 0;
 	return xfs_inode_buftarg(ip)->bt_stream_pool.nr_streams;
 }
@@ -85,7 +85,7 @@ xfs_inode_set_write_stream(
 	if (!fd_file(f))
 		return -EBADF;
 	xfs_ilock(ip, XFS_ILOCK_EXCL);
-	if (XFS_IS_REALTIME_INODE(ip)) {
+	if (XFS_IS_REALTIME_INODE(ip) && xfs_has_zoned(ip->i_mount)) {
 		error = -EINVAL;
 		goto out_unlock;
 	}
