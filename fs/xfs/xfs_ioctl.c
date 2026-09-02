@@ -560,7 +560,8 @@ xfs_ioctl_setattr_xflags(
 
 	/* refuse a filestream/realtime flag change while a stream is attached */
 	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
-	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) || rtflag))
+	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) ||
+	     rtflag != XFS_IS_REALTIME_INODE(ip)))
 		return -EINVAL;
 
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {
@@ -1442,17 +1443,32 @@ xfs_ioc_free_eofblocks(
 	return xfs_blockgc_free_space(mp, &icw);
 }
 
-/* Pool for the data of @inode, or NULL if it cannot use write streams. */
+/*
+ * Pool for the data of @inode, or NULL if it cannot use write streams.  A
+ * directory that passes the realtime flag on to new files uses the realtime
+ * pool, so that streams allocated through it can be set on those files.
+ */
 static struct write_stream_pool *
 xfs_write_stream_pool(
 	struct inode		*inode)
 {
 	struct xfs_inode	*ip = XFS_I(inode);
+	struct xfs_mount	*mp = ip->i_mount;
 	struct write_stream_pool *pool = NULL;
+	bool			rt;
 
 	xfs_ilock(ip, XFS_ILOCK_SHARED);
-	if (!xfs_inode_is_filestream(ip) && !XFS_IS_REALTIME_INODE(ip))
-		pool = &ip->i_mount->m_ddev_targp->bt_stream_pool;
+	if (xfs_inode_is_filestream(ip))
+		goto out_unlock;
+
+	rt = XFS_IS_REALTIME_INODE(ip) ||
+	     (S_ISDIR(inode->i_mode) &&
+	      (ip->i_diflags & XFS_DIFLAG_RTINHERIT) && mp->m_rtdev_targp);
+	if (!rt)
+		pool = &mp->m_ddev_targp->bt_stream_pool;
+	else if (!xfs_has_zoned(mp))
+		pool = &mp->m_rtdev_targp->bt_stream_pool;
+out_unlock:
 	xfs_iunlock(ip, XFS_ILOCK_SHARED);
 	return pool;
 }
