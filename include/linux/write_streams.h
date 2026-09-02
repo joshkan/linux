@@ -7,6 +7,9 @@
 
 struct file;
 
+/* i_write_stream value of an inode that has no write stream */
+#define WRITE_STREAM_NOT_SET	0
+
 /*
  * Write stream slot pool, embedded in whatever filesystem object scopes
  * an id space.
