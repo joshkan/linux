@@ -376,3 +376,4 @@ struct write_stream_pool;
 int write_stream_alloc_fd(struct write_stream_pool *pool, struct file *file);
 int write_stream_get_id(struct file *file,
 			const struct write_stream_pool *pool);
+int inode_set_write_stream(struct inode *inode, u16 id);
