@@ -1627,6 +1627,7 @@ void
 xfs_free_buftarg(
 	struct xfs_buftarg	*btp)
 {
+	write_stream_pool_destroy(&btp->bt_stream_pool);
 	xfs_destroy_buftarg(btp);
 	fs_put_dax(btp->bt_daxdev, btp->bt_mount);
 	/* the main block device is closed by kill_block_super */
@@ -1662,6 +1663,42 @@ xfs_configure_buftarg_atomic_writes(
 
 	btp->bt_awu_min = min_bytes;
 	btp->bt_awu_max = max_bytes;
+}
+
+/*
+ * Derive a software write stream count from a group topology: wider fanout on
+ * larger filesystems, bounded by the group count so that every stream is
+ * backed by at least one group.
+ */
+#define XFS_MAX_SW_WRITE_STREAMS	16u
+
+static unsigned int
+xfs_sw_write_stream_count(
+	unsigned int		nr_groups)
+{
+	unsigned int		group_set_size;
+
+	if (nr_groups >= 16)
+		group_set_size = 4;
+	else if (nr_groups >= 8)
+		group_set_size = 2;
+	else
+		group_set_size = 1;
+	return min(nr_groups / group_set_size, XFS_MAX_SW_WRITE_STREAMS);
+}
+
+/*
+ * Initialize the write stream pool for a buffer target, once the superblock
+ * geometry is known.  A buftarg that is never set up keeps a zeroed pool,
+ * which hands out nothing and is safe to destroy.
+ */
+int
+xfs_buftarg_init_streams(
+	struct xfs_buftarg	*btp,
+	unsigned int		nr_groups)
+{
+	return write_stream_pool_init(&btp->bt_stream_pool,
+			xfs_sw_write_stream_count(nr_groups));
 }
 
 /* Configure a buffer target that abstracts a block device. */

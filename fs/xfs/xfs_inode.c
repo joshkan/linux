@@ -4,6 +4,7 @@
  * All Rights Reserved.
  */
 #include <linux/iversion.h>
+#include <linux/write_streams.h>
 
 #include "xfs_platform.h"
 #include "xfs_fs.h"
@@ -46,6 +47,98 @@
 #include "xfs_metafile.h"
 
 struct kmem_cache *xfs_inode_cache;
+
+/*
+ * Number of write streams available to this inode.
+ *
+ * Filestreams steers locality by a rule of its own, so it cannot honour a
+ * stream, and the realtime device has no pool yet.  Called with the inode
+ * lock held so that i_diflags reads are stable.
+ */
+int
+xfs_inode_max_write_streams(
+	struct xfs_inode	*ip)
+{
+	xfs_assert_ilocked(ip, XFS_ILOCK_SHARED | XFS_ILOCK_EXCL);
+
+	if (xfs_inode_is_filestream(ip))
+		return 0;
+	if (XFS_IS_REALTIME_INODE(ip))
+		return 0;
+	return xfs_inode_buftarg(ip)->bt_stream_pool.nr_streams;
+}
+
+/*
+ * Bind the write stream named by @stream_fd to @ip, if it was reserved against
+ * the device this inode allocates from and the inode carries no conflicting
+ * placement hint.
+ */
+int
+xfs_inode_set_write_stream(
+	struct xfs_inode	*ip,
+	int			stream_fd)
+{
+	CLASS(fd, f)(stream_fd);
+	struct xfs_buftarg	*target;
+	int			error = 0;
+
+	if (!fd_file(f))
+		return -EBADF;
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
+	if (XFS_IS_REALTIME_INODE(ip)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+
+	/* the buftarg depends on the realtime flag, so resolve it under ILOCK */
+	target = xfs_inode_buftarg(ip);
+	if (!write_stream_file_check(fd_file(f), &target->bt_stream_pool)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+
+	/* Filestream and write-stream placement are mutually exclusive. */
+	if (xfs_inode_is_filestream(ip)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+
+	/*
+	 * A stream and a write life time hint both steer placement and are
+	 * exclusive.  i_lock makes this check-and-set atomic against
+	 * fcntl_set_rw_hint(), which takes the same lock.
+	 */
+	spin_lock(&VFS_I(ip)->i_lock);
+	if (VFS_I(ip)->i_write_hint != WRITE_LIFE_NOT_SET) {
+		spin_unlock(&VFS_I(ip)->i_lock);
+		error = -EBUSY;
+		goto out_unlock;
+	}
+	WRITE_ONCE(VFS_I(ip)->i_write_stream, write_stream_get_id(fd_file(f)));
+	spin_unlock(&VFS_I(ip)->i_lock);
+out_unlock:
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+	return error;
+}
+
+/*
+ * Detach whatever stream this inode carries.
+ *
+ * Takes no stream descriptor: the reservation may be long gone, and without
+ * this there is no way back from the refusals in xfs_ioctl_setattr_xflags().
+ *
+ * No i_lock, unlike the setter: that lock only keeps a stream and a hint from
+ * both being attached, which clearing cannot cause.  The ILOCK stays, so
+ * xfs_ioctl_setattr_xflags() does not read a stream that is on its way out.
+ */
+void
+xfs_inode_clear_write_stream(
+	struct xfs_inode	*ip)
+{
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
+	WRITE_ONCE(VFS_I(ip)->i_write_stream, 0);
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+}
 
 /*
  * These two are wrapper routines around the xfs_ilock() routine used to
