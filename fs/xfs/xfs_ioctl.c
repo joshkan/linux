@@ -46,6 +46,7 @@
 #include "xfs_verify_media.h"
 #include "xfs_zone_priv.h"
 #include "xfs_zone_alloc.h"
+#include "xfs_filestream.h"
 
 #include <linux/mount.h>
 #include <linux/fileattr.h>
@@ -556,6 +557,11 @@ xfs_ioctl_setattr_xflags(
 	struct xfs_mount	*mp = ip->i_mount;
 	bool			rtflag = (fa->fsx_xflags & FS_XFLAG_REALTIME);
 	uint64_t		i_flags2;
+
+	/* refuse a filestream/realtime flag change while a stream is attached */
+	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
+	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) || rtflag))
+		return -EINVAL;
 
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {
 		/* Can't change realtime flag if any extents are allocated. */
@@ -1436,6 +1442,21 @@ xfs_ioc_free_eofblocks(
 	return xfs_blockgc_free_space(mp, &icw);
 }
 
+/* Pool for the data of @inode, or NULL if it cannot use write streams. */
+static struct write_stream_pool *
+xfs_write_stream_pool(
+	struct inode		*inode)
+{
+	struct xfs_inode	*ip = XFS_I(inode);
+	struct write_stream_pool *pool = NULL;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	if (!xfs_inode_is_filestream(ip) && !XFS_IS_REALTIME_INODE(ip))
+		pool = &ip->i_mount->m_ddev_targp->bt_stream_pool;
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+	return pool;
+}
+
 /*
  * These long-unused ioctls were removed from the official ioctl API in 5.17,
  * but retain these definitions so that we can log warnings about them.
@@ -1574,6 +1595,11 @@ xfs_file_ioctl(
 		return xfs_ioc_health_monitor(filp, arg);
 	case XFS_IOC_VERIFY_MEDIA:
 		return xfs_ioc_verify_media(filp, arg);
+
+	case FS_IOC_WRITE_STREAM_GET_MAX:
+	case FS_IOC_WRITE_STREAM_ALLOC:
+	case FS_IOC_WRITE_STREAM_SET:
+		return write_stream_ioctl(filp, cmd, arg, xfs_write_stream_pool);
 
 	default:
 		return -ENOTTY;
