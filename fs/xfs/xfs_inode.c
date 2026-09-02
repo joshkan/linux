@@ -4,6 +4,7 @@
  * All Rights Reserved.
  */
 #include <linux/iversion.h>
+#include <linux/write_streams.h>
 
 #include "xfs_platform.h"
 #include "xfs_fs.h"
@@ -46,6 +47,23 @@
 #include "xfs_metafile.h"
 
 struct kmem_cache *xfs_inode_cache;
+
+/*
+ * Write stream pool for the data of @ip, or NULL if it cannot use write
+ * streams.
+ */
+struct write_stream_pool *
+xfs_inode_write_stream_pool(
+	struct xfs_inode	*ip)
+{
+	xfs_assert_ilocked(ip, XFS_ILOCK_SHARED | XFS_ILOCK_EXCL);
+
+	if (xfs_inode_is_filestream(ip))
+		return NULL;
+	if (XFS_IS_REALTIME_INODE(ip))
+		return NULL;
+	return &ip->i_mount->m_ddev_targp->bt_stream_pool;
+}
 
 /*
  * These two are wrapper routines around the xfs_ilock() routine used to
