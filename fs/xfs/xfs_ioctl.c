@@ -557,6 +557,11 @@ xfs_ioctl_setattr_xflags(
 	bool			rtflag = (fa->fsx_xflags & FS_XFLAG_REALTIME);
 	uint64_t		i_flags2;
 
+	/* refuse a filestream/realtime flag change while a stream is attached */
+	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
+	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) || rtflag))
+		return -EINVAL;
+
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {
 		/* Can't change realtime flag if any extents are allocated. */
 		if (xfs_inode_has_filedata(ip))

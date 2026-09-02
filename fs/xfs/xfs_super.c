@@ -608,6 +608,11 @@ xfs_setup_devices(
 	if (error)
 		return error;
 
+	error = xfs_buftarg_init_streams(mp->m_ddev_targp,
+			mp->m_sb.sb_agcount);
+	if (error)
+		return error;
+
 	if (mp->m_logdev_targp && mp->m_logdev_targp != mp->m_ddev_targp) {
 		unsigned int	log_sector_size = BBSIZE;
 
@@ -1331,6 +1336,19 @@ xfs_fs_report_error(
 		xfs_healthmon_report_file_ioerror(XFS_I(event->inode), event);
 }
 
+static struct write_stream_pool *
+xfs_fs_write_stream_pool(
+	struct inode		*inode)
+{
+	struct xfs_inode	*ip = XFS_I(inode);
+	struct write_stream_pool *pool;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	pool = xfs_inode_write_stream_pool(ip);
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+	return pool;
+}
+
 static const struct super_operations xfs_super_operations = {
 	.alloc_inode		= xfs_fs_alloc_inode,
 	.destroy_inode		= xfs_fs_destroy_inode,
@@ -1347,6 +1365,7 @@ static const struct super_operations xfs_super_operations = {
 	.shutdown		= xfs_fs_shutdown,
 	.show_stats		= xfs_fs_show_stats,
 	.report_error		= xfs_fs_report_error,
+	.write_stream_pool	= xfs_fs_write_stream_pool,
 };
 
 static int
