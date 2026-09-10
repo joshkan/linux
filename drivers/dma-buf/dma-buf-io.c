@@ -59,17 +59,11 @@ static void dma_buf_io_map_release_work(struct work_struct *work)
 	refcount_inc(&ctx->refs);
 
 	/*
-	 * There are no more requests using the map. If a fence was published
-	 * into the reservation object, signal it now, before taking the resv
-	 * lock, as someone could be waiting for the fence while holding the
-	 * lock. @fence is NULL when dma_buf_io_drop_map() could not reserve
-	 * a fence slot; wake dma_buf_io_drop_map()'s synchronous waiter
-	 * unconditionally instead.
+	 * The fence, if any, was already signaled from
+	 * dma_buf_io_map_refs_release(). This work item carries no
+	 * signalling obligations of its own, so it may take the resv lock
+	 * and block freely.
 	 */
-	if (fence)
-		dma_fence_signal(&fence->base);
-	complete(&map->release_done);
-
 	dma_resv_lock(dmabuf->resv, NULL);
 	ctx->dev_ops->unmap(ctx, map);
 	dma_resv_unlock(dmabuf->resv);
@@ -92,8 +86,23 @@ static void dma_buf_io_map_release_work(struct work_struct *work)
 static void dma_buf_io_map_refs_release(struct percpu_ref *ref)
 {
 	struct dma_buf_io_map *map = container_of(ref, struct dma_buf_io_map, refs);
+	struct dma_buf_io_fence *fence = map->fence;
 
-	/* might sleep, use a worker */
+	/*
+	 * dma_fence_signal() and complete() never block or allocate and are
+	 * safe from any context, including atomic/IRQ. Signal right here,
+	 * synchronously, so the signal has no dependency on workqueue
+	 * scheduling: a shared worker pool is itself a resource a fence must
+	 * never depend on to make progress, since every worker could be
+	 * stuck in reclaim waiting on this very fence. @fence is NULL when
+	 * dma_buf_io_drop_map() could not reserve a fence slot; wake its
+	 * synchronous waiter unconditionally instead.
+	 */
+	if (fence)
+		dma_fence_signal(&fence->base);
+	complete(&map->release_done);
+
+	/* Everything else needs process context: defer it. */
 	INIT_WORK(&map->release_work, dma_buf_io_map_release_work);
 	queue_work(system_wq, &map->release_work);
 }
