@@ -7,6 +7,15 @@
 #include <linux/dma-buf-io.h>
 #include <linux/dma-resv.h>
 
+/*
+ * An exporter is free to call dma_buf_invalidate_mappings() from its own
+ * eviction/move path and can wait for ->unmap() within bounded time.
+ * Queue the resulting deferred unmap work here instead of on system_wq, so
+ * unrelated GFP_KERNEL-allocating work saturating the shared pool cannot
+ * stall it.
+ */
+static struct workqueue_struct *dma_buf_io_wq;
+
 struct dma_buf_io_fence {
 	struct dma_fence base;
 	spinlock_t lock;
@@ -104,7 +113,7 @@ static void dma_buf_io_map_refs_release(struct percpu_ref *ref)
 
 	/* Everything else needs process context: defer it. */
 	INIT_WORK(&map->release_work, dma_buf_io_map_release_work);
-	queue_work(system_wq, &map->release_work);
+	queue_work(dma_buf_io_wq, &map->release_work);
 }
 
 int dma_buf_io_init_map(struct dma_buf_io_ctx *ctx, struct dma_buf_io_map *map)
@@ -318,3 +327,12 @@ int dma_buf_io_ctx_create(struct file *file,
 
 	return ret;
 }
+
+static int __init dma_buf_io_init(void)
+{
+	dma_buf_io_wq = alloc_workqueue("dma_buf_io", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	if (!dma_buf_io_wq)
+		return -ENOMEM;
+	return 0;
+}
+subsys_initcall(dma_buf_io_init);
