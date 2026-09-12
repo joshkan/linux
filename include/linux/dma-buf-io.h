@@ -39,9 +39,10 @@ struct dma_buf_io_map {
 	struct work_struct		release_work;
 
 	/*
-	 * Set by dma_buf_io_drop_map() only once the map is being torn
-	 * down, after a fence slot has been reserved in the dmabuf's
-	 * reservation object. NULL for the entire time the map is live.
+	 * Allocated (but not dma_fence_init()'d) at map creation. Only
+	 * dma_buf_io_drop_map() initializes and publishes it, once the map
+	 * is being torn down and a fence slot has been reserved in the
+	 * dmabuf's reservation object; NULL only if that reservation failed.
 	 */
 	struct dma_buf_io_fence		*fence;
 

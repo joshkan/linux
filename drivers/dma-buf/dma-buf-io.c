@@ -109,6 +109,7 @@ static void dma_buf_io_map_refs_release(struct percpu_ref *ref)
 
 int dma_buf_io_init_map(struct dma_buf_io_ctx *ctx, struct dma_buf_io_map *map)
 {
+	struct dma_buf_io_fence *fence;
 	int ret;
 
 	ret = percpu_ref_init(&map->refs, dma_buf_io_map_refs_release, 0, GFP_KERNEL);
@@ -116,15 +117,25 @@ int dma_buf_io_init_map(struct dma_buf_io_ctx *ctx, struct dma_buf_io_map *map)
 		return ret;
 
 	/*
-	 * The completion fence is created lazily, by dma_buf_io_drop_map(),
-	 * only once teardown starts and a slot for it has been reserved in
-	 * the dmabuf's reservation object. Creating it here instead would
+	 * Pre-allocate the fence's backing memory here, at ordinary map
+	 * creation, rather than in dma_buf_io_drop_map(). That path is
+	 * reached via dma_buf_invalidate_mappings(), which an exporter is
+	 * free to call from a reclaim-adjacent context, so it should need to
+	 * allocate as little as possible. dma_fence_init() itself still
+	 * happens there, only once a slot for it has been reserved in the
+	 * dmabuf's reservation object: initializing it here instead would
 	 * leave it live (and thus subject to the "no allocations until this
 	 * fence signals" dma_fence rule) for the map's entire, arbitrarily
 	 * long, active lifetime.
 	 */
+	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+	if (!fence) {
+		percpu_ref_exit(&map->refs);
+		return -ENOMEM;
+	}
+
 	init_completion(&map->release_done);
-	map->fence = NULL;
+	map->fence = fence;
 	map->ctx = ctx;
 	return 0;
 }
@@ -194,29 +205,27 @@ static void dma_buf_io_drop_map(struct dma_buf_io_ctx *ctx)
 	if (!map)
 		return;
 	rcu_assign_pointer(ctx->map, NULL);
+	fence = map->fence;
 
 	/*
-	 * Follow the dma_fence rules: prepare all allocations first, then
-	 * reserve a fence slot, and only then create/init the dma_fence
-	 * itself. No allocation is allowed between dma_fence_init() and
-	 * dma_resv_add_fence() below, since once the fence exists it can in
-	 * principle be found and waited on, and memory reclaim looping back
-	 * to wait for it would deadlock.
+	 * Follow the dma_fence rules: the fence's memory is already
+	 * allocated (dma_buf_io_init_map()); reserve a slot for it and only
+	 * then init the dma_fence itself. No allocation is allowed between
+	 * dma_fence_init() and dma_resv_add_fence() below, since once the
+	 * fence exists it can in principle be found and waited on, and
+	 * memory reclaim looping back to wait for it would deadlock.
 	 */
-	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
-	if (!fence)
-		goto wait_sync;
-
 	ret = dma_resv_reserve_fences(dmabuf->resv, 1);
 	if (WARN_ON_ONCE(ret)) {
+		/* Fence was never initialized; just free its memory. */
 		kfree(fence);
+		map->fence = NULL;
 		goto wait_sync;
 	}
 
 	spin_lock_init(&fence->lock);
 	dma_fence_init(&fence->base, &dma_buf_io_fence_ops, &fence->lock,
 			ctx->fence_ctx, atomic_inc_return(&ctx->fence_seq));
-	map->fence = fence;
 
 	dma_resv_add_fence(dmabuf->resv, &fence->base, DMA_RESV_USAGE_KERNEL);
 	/*
