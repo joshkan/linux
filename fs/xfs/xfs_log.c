@@ -1615,6 +1615,7 @@ xlog_write_iclog(
 	iclog->ic_bio.bi_iter.bi_sector = log->l_logBBstart + bno;
 	iclog->ic_bio.bi_end_io = xlog_bio_end_io;
 	iclog->ic_bio.bi_private = iclog;
+	iclog->ic_bio.bi_write_stream = log->l_targ->bt_meta_stream;
 
 	if (iclog->ic_flags & XLOG_ICL_NEED_FLUSH) {
 		if (xlog_flush_data_caches(log))

@@ -1299,6 +1299,8 @@ xfs_buf_submit_bio(
 		bio_add_virt_nofail(bio, bp->b_addr, len);
 	bio->bi_private = bp;
 	bio->bi_end_io = xfs_buf_bio_end_io;
+	if (bp->b_flags & XBF_WRITE)
+		bio->bi_write_stream = bp->b_target->bt_meta_stream;
 
 	/*
 	 * If there is more than one map segment, split out a new bio for each
@@ -1706,16 +1708,23 @@ xfs_sw_write_stream_count(
 int
 xfs_buftarg_init_streams(
 	struct xfs_buftarg	*btp,
-	unsigned int		nr_groups)
+	unsigned int		nr_groups,
+	bool			metadata)
 {
 	unsigned int		nr_streams;
 	unsigned int		hw_streams;
 
 	hw_streams = bdev_max_write_streams(btp->bt_bdev);
-	if (hw_streams)
+	if (hw_streams) {
+		/* the last hardware stream is kept for metadata and the log */
+		if (metadata) {
+			btp->bt_meta_stream = hw_streams;
+			hw_streams--;
+		}
 		nr_streams = min(hw_streams, nr_groups);
-	else
+	} else {
 		nr_streams = xfs_sw_write_stream_count(nr_groups);
+	}
 	return write_stream_pool_init(&btp->bt_stream_pool, nr_streams);
 }
 
