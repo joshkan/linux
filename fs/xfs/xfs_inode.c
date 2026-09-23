@@ -70,6 +70,7 @@ xfs_inode_set_write_stream(
 {
 	CLASS(fd, f)(stream_fd);
 	struct xfs_buftarg	*target;
+	u32			group, group_flags;
 	int			id, error = 0;
 
 	if (!fd_file(f))
@@ -80,16 +81,29 @@ xfs_inode_set_write_stream(
 		goto out_unlock;
 	}
 
+	/* Filestream and write-stream are mutually exclusive */
+	if (xfs_inode_is_filestream(ip)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+
 	target = xfs_inode_buftarg(ip);
+	if (!write_stream_get_target(fd_file(f), &target->bt_stream_pool,
+				     &group, &group_flags)) {
+		if (READ_ONCE(VFS_I(ip)->i_write_stream))
+			error = -EBUSY;
+		else
+			WRITE_ONCE(ip->i_stream_group, group);
+		goto out_unlock;
+	}
+
 	id = write_stream_get_id(fd_file(f), &target->bt_stream_pool);
 	if (id < 0) {
 		error = id;
 		goto out_unlock;
 	}
-
-	/* Filestream and write-stream are mutually exclusive */
-	if (xfs_inode_is_filestream(ip)) {
-		error = -EINVAL;
+	if (ip->i_stream_group != NULLAGNUMBER) {
+		error = -EBUSY;
 		goto out_unlock;
 	}
 
@@ -113,6 +127,7 @@ xfs_inode_clear_write_stream(
 {
 	xfs_ilock(ip, XFS_ILOCK_EXCL);
 	WRITE_ONCE(VFS_I(ip)->i_write_stream, 0);
+	WRITE_ONCE(ip->i_stream_group, NULLAGNUMBER);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 }
 

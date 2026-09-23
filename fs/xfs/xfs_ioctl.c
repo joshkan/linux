@@ -558,7 +558,8 @@ xfs_ioctl_setattr_xflags(
 	uint64_t		i_flags2;
 
 	/* refuse a filestream/realtime flag change while a stream is attached */
-	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
+	if ((READ_ONCE(VFS_I(ip)->i_write_stream) ||
+	     ip->i_stream_group != NULLAGNUMBER) &&
 	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) ||
 	     rtflag != XFS_IS_REALTIME_INODE(ip)))
 		return -EINVAL;
@@ -1243,6 +1244,40 @@ xfs_ioc_write_stream_alloc(
 }
 
 static int
+xfs_ioc_write_stream_alloc_group(
+	struct file		*filp,
+	void __user		*arg)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(filp));
+	struct xfs_mount	*mp = ip->i_mount;
+	struct xfs_write_stream_group wsg;
+	struct xfs_buftarg	*target;
+	uint32_t		nr_groups = 0;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (copy_from_user(&wsg, arg, sizeof(wsg)))
+		return -EFAULT;
+	if (wsg.flags || wsg.reserved)
+		return -EINVAL;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	target = xfs_inode_buftarg(ip);
+	if (!XFS_IS_REALTIME_INODE(ip))
+		nr_groups = mp->m_sb.sb_agcount;
+	else if (xfs_has_rtgroups(mp) && !xfs_has_zoned(mp))
+		nr_groups = mp->m_sb.sb_rgcount;
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+
+	if (!nr_groups)
+		return -EOPNOTSUPP;
+	if (wsg.group >= nr_groups)
+		return -EINVAL;
+	return write_stream_alloc_target_fd(&target->bt_stream_pool, filp,
+			wsg.group, wsg.flags);
+}
+
+static int
 xfs_ioc_write_stream_set(
 	struct file		*filp,
 	void __user		*arg)
@@ -1545,6 +1580,8 @@ xfs_file_ioctl(
 		return xfs_ioc_write_stream_alloc(filp);
 	case FS_IOC_WRITE_STREAM_SET:
 		return xfs_ioc_write_stream_set(filp, (void __user *)arg);
+	case XFS_IOC_WRITE_STREAM_ALLOC_GROUP:
+		return xfs_ioc_write_stream_alloc_group(filp, arg);
 
 	default:
 		return -ENOTTY;

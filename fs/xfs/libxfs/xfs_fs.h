@@ -1192,6 +1192,17 @@ struct xfs_verify_media {
 #define XFS_VERIFY_MEDIA_FLAGS	(XFS_VERIFY_MEDIA_REPORT)
 
 /*
+ * Returns a write stream fd, for FS_IOC_WRITE_STREAM_SET, that places
+ * allocations in one allocation group, or one realtime group if issued on a
+ * realtime file.  Any number of streams may name the same group.
+ */
+struct xfs_write_stream_group {
+	__u32		group;		/* IN: AG or rtgroup number */
+	__u32		flags;		/* IN: XFS_WRITE_STREAM_GROUP_* */
+	__u64		reserved;	/* must be zero */
+};
+
+/*
  * ioctl commands that are used by Linux filesystems
  */
 #define XFS_IOC_GETXFLAGS	FS_IOC_GETFLAGS
@@ -1234,6 +1245,8 @@ struct xfs_verify_media {
 #define XFS_IOC_HEALTH_FD_ON_MONITORED_FS \
 				_IOW ('X', 69, struct xfs_health_file_on_monitored_fs)
 #define XFS_IOC_VERIFY_MEDIA	_IOWR('X', 70, struct xfs_verify_media)
+#define XFS_IOC_WRITE_STREAM_ALLOC_GROUP \
+				_IOW ('X', 71, struct xfs_write_stream_group)
 
 /*
  * ioctl commands that replace IRIX syssgi()'s

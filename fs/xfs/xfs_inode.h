@@ -91,6 +91,9 @@ typedef struct xfs_inode {
 	 */
 	xfs_agino_t		i_prev_unlinked;
 
+	/* in-memory write stream group target, NULLAGNUMBER if none */
+	uint32_t		i_stream_group;
+
 	/* VFS inode */
 	struct inode		i_vnode;	/* embedded VFS inode */
 

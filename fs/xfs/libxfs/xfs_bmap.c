@@ -3659,6 +3659,93 @@ xfs_bmap_btalloc_write_stream(
 	return xfs_bmap_btalloc_from_blkno(ap, args, stripe_align);
 }
 
+/* Allocate in @agno only; fsbno is NULLFSBLOCK if it has no room. */
+static int
+xfs_bmap_btalloc_in_ag(
+	struct xfs_bmalloca	*ap,
+	struct xfs_alloc_arg	*args,
+	int			stripe_align,
+	xfs_agnumber_t		agno)
+{
+	struct xfs_mount	*mp = ap->ip->i_mount;
+	xfs_fsblock_t		ag_start = XFS_AGB_TO_FSB(mp, agno, 0);
+	xfs_extlen_t		blen = 0;
+	int			error;
+
+	args->pag = xfs_perag_grab(mp, agno);
+	if (!args->pag)
+		return 0;
+
+	/* extend the previous extent only if it is in this AG */
+	ap->blkno = ag_start;
+	if (!xfs_bmap_adjacent(ap) ||
+	    XFS_FSB_TO_AGNO(mp, ap->blkno) != agno) {
+		ap->blkno = ag_start;
+		ap->eof = false;
+	}
+
+	if (ap->tp->t_flags & XFS_TRANS_LOWMODE) {
+		args->total = ap->minlen;
+		args->minlen = ap->minlen;
+	} else {
+		args->total = ap->total;
+		error = xfs_bmap_longest_free_extent(args->pag, args->tp,
+				&blen);
+		if (error && error != -EAGAIN)
+			goto out_rele;
+		args->minlen = xfs_bmap_select_minlen(ap, args, blen);
+	}
+
+	error = 0;
+	if (ap->aeof && !(ap->tp->t_flags & XFS_TRANS_LOWMODE))
+		error = xfs_bmap_btalloc_at_eof(ap, args, blen, stripe_align,
+				true);
+	if (!error && args->fsbno == NULLFSBLOCK)
+		error = xfs_alloc_vextent_near_bno(args, ap->blkno);
+	if (!error && args->fsbno == NULLFSBLOCK &&
+	    args->minlen > ap->minlen) {
+		args->alignment = 1;
+		args->minalignslop = 0;
+		args->minlen = ap->minlen;
+		error = xfs_alloc_vextent_near_bno(args, ap->blkno);
+	}
+out_rele:
+	xfs_perag_rele(args->pag);
+	args->pag = NULL;
+	return error;
+}
+
+/*
+ * Allocate for a file whose write stream names AG @agno: try that AG first,
+ * then the rest of the filesystem starting from it.
+ */
+static int
+xfs_bmap_btalloc_group(
+	struct xfs_bmalloca	*ap,
+	struct xfs_alloc_arg	*args,
+	int			stripe_align,
+	xfs_agnumber_t		agno)
+{
+	struct xfs_mount	*mp = ap->ip->i_mount;
+	xfs_extlen_t		alignment = args->alignment;
+	bool			eof = ap->eof;
+	int			error;
+
+	if (agno < mp->m_sb.sb_agcount) {
+		error = xfs_bmap_btalloc_in_ag(ap, args, stripe_align, agno);
+		if (error || args->fsbno != NULLFSBLOCK)
+			return error;
+	} else {
+		agno = 0;
+	}
+
+	args->alignment = alignment;
+	args->minalignslop = 0;
+	ap->blkno = XFS_AGB_TO_FSB(mp, agno, 0);
+	ap->eof = eof;
+	return xfs_bmap_btalloc_from_blkno(ap, args, stripe_align);
+}
+
 static int
 xfs_bmap_btalloc_best_length(
 	struct xfs_bmalloca	*ap,
@@ -3689,6 +3776,7 @@ xfs_bmap_btalloc(
 	xfs_fileoff_t		orig_offset;
 	xfs_extlen_t		orig_length;
 	unsigned int		stream_id;
+	xfs_agnumber_t		stream_agno;
 	int			error;
 	int			stripe_align;
 
@@ -3702,12 +3790,17 @@ xfs_bmap_btalloc(
 	args.maxlen = min(ap->length, mp->m_ag_max_usable);
 
 	stream_id = READ_ONCE(VFS_I(ap->ip)->i_write_stream);
+	stream_agno = READ_ONCE(ap->ip->i_stream_group);
 
 	if (unlikely(XFS_TEST_ERROR(mp, XFS_ERRTAG_BMAP_ALLOC_MINLEN_EXTENT)))
 		error = xfs_bmap_exact_minlen_extent_alloc(ap, &args);
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) &&
 			xfs_inode_is_filestream(ap->ip))
 		error = xfs_bmap_btalloc_filestreams(ap, &args, stripe_align);
+	else if ((ap->datatype & XFS_ALLOC_USERDATA) &&
+			stream_agno != NULLAGNUMBER)
+		error = xfs_bmap_btalloc_group(ap, &args, stripe_align,
+				stream_agno);
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) && stream_id)
 		error = xfs_bmap_btalloc_write_stream(ap, &args, stripe_align,
 				stream_id);
