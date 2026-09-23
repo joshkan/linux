@@ -12,16 +12,20 @@
 struct write_stream {
 	struct write_stream_pool	*pool;
 	struct vfsmount			*mnt;	/* pins the mount */
-	u16				id;	/* 1-based slot number */
+	u16				id;	/* 1-based slot number, 0 if targeted */
+	u32				target;	/* filesystem-defined */
+	u32				target_flags;
 };
 
 static int write_stream_release(struct inode *inode, struct file *file)
 {
 	struct write_stream *ws = file->private_data;
 
-	spin_lock(&ws->pool->lock);
-	__clear_bit(ws->id - 1, ws->pool->streams_in_use);
-	spin_unlock(&ws->pool->lock);
+	if (ws->id) {
+		spin_lock(&ws->pool->lock);
+		__clear_bit(ws->id - 1, ws->pool->streams_in_use);
+		spin_unlock(&ws->pool->lock);
+	}
 	mntput(ws->mnt);
 	kfree(ws);
 	return 0;
@@ -117,22 +121,91 @@ int write_stream_alloc_fd(struct write_stream_pool *pool, struct file *file)
 EXPORT_SYMBOL_GPL(write_stream_alloc_fd);
 
 /**
- * write_stream_get_id - the id a stream file names
- * @file: candidate stream file
- * @pool: pool the stream must belong to, or NULL to accept any
+ * write_stream_alloc_target_fd - return an fd naming a filesystem target
+ * @pool: pool whose device the target belongs to
+ * @file: file whose mount is pinned for the life of the stream
+ * @target: filesystem-defined target
+ * @flags: filesystem-defined flags
  *
- * Returns the 1-based id, or -EINVAL if @file is not a stream file, or is
- * a stream of a different pool.
+ * A targeted stream takes no slot, so any number of them may name the same
+ * target.  Returns an O_RDONLY | O_CLOEXEC fd or a negative errno.
  */
-int write_stream_get_id(struct file *file, const struct write_stream_pool *pool)
+int write_stream_alloc_target_fd(struct write_stream_pool *pool,
+				 struct file *file, u32 target, u32 flags)
+{
+	struct write_stream *ws;
+	int fd;
+
+	ws = kzalloc_obj(*ws, GFP_KERNEL);
+	if (!ws)
+		return -ENOMEM;
+
+	ws->pool = pool;
+	ws->mnt = mntget(file->f_path.mnt);
+	ws->target = target;
+	ws->target_flags = flags;
+
+	fd = anon_inode_getfd("[write_stream]", &write_stream_fops, ws,
+			      O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		mntput(ws->mnt);
+		kfree(ws);
+	}
+	return fd;
+}
+EXPORT_SYMBOL_GPL(write_stream_alloc_target_fd);
+
+static struct write_stream *write_stream_file(struct file *file,
+		const struct write_stream_pool *pool)
 {
 	struct write_stream *ws;
 
 	if (file->f_op != &write_stream_fops)
-		return -EINVAL;
+		return NULL;
 	ws = file->private_data;
 	if (pool && ws->pool != pool)
+		return NULL;
+	return ws;
+}
+
+/**
+ * write_stream_get_id - the id a stream file names
+ * @file: candidate stream file
+ * @pool: pool the stream must belong to, or NULL to accept any
+ *
+ * Returns the 1-based id, or -EINVAL if @file is not a slot stream file, or
+ * is a stream of a different pool.
+ */
+int write_stream_get_id(struct file *file, const struct write_stream_pool *pool)
+{
+	struct write_stream *ws = write_stream_file(file, pool);
+
+	if (!ws || !ws->id)
 		return -EINVAL;
 	return ws->id;
 }
 EXPORT_SYMBOL_GPL(write_stream_get_id);
+
+/**
+ * write_stream_get_target - the target a stream file names
+ * @file: candidate stream file
+ * @pool: pool the stream must belong to, or NULL to accept any
+ * @target: returns the filesystem-defined target
+ * @flags: returns the filesystem-defined flags
+ *
+ * Returns 0, or -EINVAL if @file is not a targeted stream file, or is a
+ * stream of a different pool.
+ */
+int write_stream_get_target(struct file *file,
+			    const struct write_stream_pool *pool,
+			    u32 *target, u32 *flags)
+{
+	struct write_stream *ws = write_stream_file(file, pool);
+
+	if (!ws || ws->id)
+		return -EINVAL;
+	*target = ws->target;
+	*flags = ws->target_flags;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(write_stream_get_target);

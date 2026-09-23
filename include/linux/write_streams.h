@@ -30,4 +30,10 @@ int  write_stream_alloc_fd(struct write_stream_pool *pool, struct file *file);
 int  write_stream_get_id(struct file *file,
 			 const struct write_stream_pool *pool);
 
+int  write_stream_alloc_target_fd(struct write_stream_pool *pool,
+				  struct file *file, u32 target, u32 flags);
+int  write_stream_get_target(struct file *file,
+			     const struct write_stream_pool *pool,
+			     u32 *target, u32 *flags);
+
 #endif /* _LINUX_WRITE_STREAMS_H */
