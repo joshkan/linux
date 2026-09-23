@@ -126,6 +126,7 @@ xfs_inode_alloc(
 	ip->i_next_unlinked = NULLAGINO;
 	ip->i_prev_unlinked = 0;
 	ip->i_stream_group = NULLAGNUMBER;
+	ip->i_stream_confine = false;
 
 	return ip;
 }
@@ -369,6 +370,7 @@ xfs_iget_recycle(
 	ASSERT(!rwsem_is_locked(&inode->i_rwsem));
 	error = xfs_reinit_inode(mp, inode);
 	ip->i_stream_group = NULLAGNUMBER;
+	ip->i_stream_confine = false;
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 	if (error) {
 		/*

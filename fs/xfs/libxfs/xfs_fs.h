@@ -1202,6 +1202,9 @@ struct xfs_write_stream_group {
 	__u64		reserved;	/* must be zero */
 };
 
+/* Fail with ENOSPC rather than allocate outside the group. */
+#define XFS_WRITE_STREAM_GROUP_CONFINE	(1U << 0)
+
 /*
  * ioctl commands that are used by Linux filesystems
  */

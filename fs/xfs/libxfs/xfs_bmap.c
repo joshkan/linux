@@ -3717,14 +3717,15 @@ out_rele:
 
 /*
  * Allocate for a file whose write stream names AG @agno: try that AG first,
- * then the rest of the filesystem starting from it.
+ * then, unless @confine, the rest of the filesystem starting from it.
  */
 static int
 xfs_bmap_btalloc_group(
 	struct xfs_bmalloca	*ap,
 	struct xfs_alloc_arg	*args,
 	int			stripe_align,
-	xfs_agnumber_t		agno)
+	xfs_agnumber_t		agno,
+	bool			confine)
 {
 	struct xfs_mount	*mp = ap->ip->i_mount;
 	xfs_extlen_t		alignment = args->alignment;
@@ -3733,8 +3734,10 @@ xfs_bmap_btalloc_group(
 
 	if (agno < mp->m_sb.sb_agcount) {
 		error = xfs_bmap_btalloc_in_ag(ap, args, stripe_align, agno);
-		if (error || args->fsbno != NULLFSBLOCK)
+		if (error || args->fsbno != NULLFSBLOCK || confine)
 			return error;
+	} else if (confine) {
+		return 0;
 	} else {
 		agno = 0;
 	}
@@ -3800,7 +3803,7 @@ xfs_bmap_btalloc(
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) &&
 			stream_agno != NULLAGNUMBER)
 		error = xfs_bmap_btalloc_group(ap, &args, stripe_align,
-				stream_agno);
+				stream_agno, READ_ONCE(ap->ip->i_stream_confine));
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) && stream_id)
 		error = xfs_bmap_btalloc_write_stream(ap, &args, stripe_align,
 				stream_id);

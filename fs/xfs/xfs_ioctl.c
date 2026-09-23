@@ -1258,7 +1258,7 @@ xfs_ioc_write_stream_alloc_group(
 		return -EPERM;
 	if (copy_from_user(&wsg, arg, sizeof(wsg)))
 		return -EFAULT;
-	if (wsg.flags || wsg.reserved)
+	if ((wsg.flags & ~XFS_WRITE_STREAM_GROUP_CONFINE) || wsg.reserved)
 		return -EINVAL;
 
 	xfs_ilock(ip, XFS_ILOCK_SHARED);

@@ -1814,8 +1814,12 @@ xfs_buffered_write_iomap_begin(
 		return xfs_zoned_buffered_write_iomap_begin(inode, offset,
 				count, flags, iomap, srcmap);
 
-	/* we can't use delayed allocations when using extent size hints */
-	if (xfs_get_extsz_hint(ip))
+	/*
+	 * We can't use delayed allocations when using extent size hints, or
+	 * when a write stream confines allocation and ENOSPC must be reported
+	 * at write time.
+	 */
+	if (xfs_get_extsz_hint(ip) || READ_ONCE(ip->i_stream_confine))
 		return xfs_direct_write_iomap_begin(inode, offset, count,
 				flags, iomap, srcmap);
 

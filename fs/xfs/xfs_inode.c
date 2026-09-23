@@ -62,6 +62,28 @@ xfs_inode_max_write_streams(
 	return write_stream_pool_count(&xfs_inode_buftarg(ip)->bt_stream_pool);
 }
 
+static int
+xfs_inode_set_stream_group(
+	struct xfs_inode	*ip,
+	u32			group,
+	u32			flags)
+{
+	bool			confine = flags & XFS_WRITE_STREAM_GROUP_CONFINE;
+
+	if (READ_ONCE(VFS_I(ip)->i_write_stream))
+		return -EBUSY;
+	/*
+	 * Delalloc extents are converted at writeback, too late to report
+	 * ENOSPC, so a confined file must have none.
+	 */
+	if (confine && ip->i_delayed_blks)
+		return -EBUSY;
+
+	WRITE_ONCE(ip->i_stream_confine, confine);
+	WRITE_ONCE(ip->i_stream_group, group);
+	return 0;
+}
+
 /* Bind the write stream named by @stream_fd to @ip */
 int
 xfs_inode_set_write_stream(
@@ -90,10 +112,7 @@ xfs_inode_set_write_stream(
 	target = xfs_inode_buftarg(ip);
 	if (!write_stream_get_target(fd_file(f), &target->bt_stream_pool,
 				     &group, &group_flags)) {
-		if (READ_ONCE(VFS_I(ip)->i_write_stream))
-			error = -EBUSY;
-		else
-			WRITE_ONCE(ip->i_stream_group, group);
+		error = xfs_inode_set_stream_group(ip, group, group_flags);
 		goto out_unlock;
 	}
 
@@ -128,6 +147,7 @@ xfs_inode_clear_write_stream(
 	xfs_ilock(ip, XFS_ILOCK_EXCL);
 	WRITE_ONCE(VFS_I(ip)->i_write_stream, 0);
 	WRITE_ONCE(ip->i_stream_group, NULLAGNUMBER);
+	WRITE_ONCE(ip->i_stream_confine, false);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 }
 

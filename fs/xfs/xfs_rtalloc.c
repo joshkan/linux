@@ -2223,7 +2223,13 @@ retry:
 	else if (stream_id && xfs_has_rtgroups(ap->ip->i_mount))
 		bno_hint = xfs_bmap_write_stream_rtbno(ap->ip, stream_id);
 
-	if (xfs_has_rtgroups(ap->ip->i_mount)) {
+	if (stream_rgno != NULLRGNUMBER &&
+	    READ_ONCE(ap->ip->i_stream_confine)) {
+		error = xfs_rtallocate_rtg(ap->tp, stream_rgno, bno_hint,
+				raminlen, ralen, prod, ap->wasdel,
+				initial_user_data, &rtlocked, &ap->blkno,
+				&ap->length);
+	} else if (xfs_has_rtgroups(ap->ip->i_mount)) {
 		error = xfs_rtallocate_rtgs(ap->tp, bno_hint, raminlen, ralen,
 				prod, ap->wasdel, initial_user_data,
 				&ap->blkno, &ap->length);

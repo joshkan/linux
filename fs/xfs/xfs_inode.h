@@ -93,6 +93,7 @@ typedef struct xfs_inode {
 
 	/* in-memory write stream group target, NULLAGNUMBER if none */
 	uint32_t		i_stream_group;
+	bool			i_stream_confine;
 
 	/* VFS inode */
 	struct inode		i_vnode;	/* embedded VFS inode */
