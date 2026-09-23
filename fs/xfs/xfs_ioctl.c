@@ -1285,15 +1285,16 @@ xfs_ioc_write_stream_set(
 	struct xfs_inode	*ip = XFS_I(file_inode(filp));
 	struct fs_write_stream_set set;
 
-	if (!(filp->f_mode & FMODE_WRITE))
-		return -EBADF;
+	/* directories take group targets only, and cannot be opened to write */
+	if (S_ISREG(VFS_I(ip)->i_mode)) {
+		if (!(filp->f_mode & FMODE_WRITE))
+			return -EBADF;
+	} else if (!S_ISDIR(VFS_I(ip)->i_mode)) {
+		return -EINVAL;
+	}
 	if (copy_from_user(&set, arg, sizeof(set)))
 		return -EFAULT;
 	if (set.flags & ~FS_WRITE_STREAM_SET_CLEAR)
-		return -EINVAL;
-
-	/* Regular files only. */
-	if (!S_ISREG(VFS_I(ip)->i_mode))
 		return -EINVAL;
 
 	if (!inode_owner_or_capable(file_mnt_idmap(filp), VFS_I(ip)))

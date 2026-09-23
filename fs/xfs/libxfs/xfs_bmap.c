@@ -3800,8 +3800,10 @@ xfs_bmap_btalloc(
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) &&
 			xfs_inode_is_filestream(ap->ip))
 		error = xfs_bmap_btalloc_filestreams(ap, &args, stripe_align);
-	else if ((ap->datatype & XFS_ALLOC_USERDATA) &&
-			stream_agno != NULLAGNUMBER)
+	else if (stream_agno != NULLAGNUMBER &&
+		 ((ap->datatype & XFS_ALLOC_USERDATA) ||
+		  (S_ISDIR(VFS_I(ap->ip)->i_mode) &&
+		   !(ap->flags & XFS_BMAPI_ATTRFORK))))
 		error = xfs_bmap_btalloc_group(ap, &args, stripe_align,
 				stream_agno, READ_ONCE(ap->ip->i_stream_confine));
 	else if ((ap->datatype & XFS_ALLOC_USERDATA) && stream_id)

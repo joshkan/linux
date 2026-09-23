@@ -1899,12 +1899,26 @@ xfs_dialloc(
 	xfs_agnumber_t		agno;
 	xfs_agnumber_t		start_agno;
 	umode_t			mode = args->mode & S_IFMT;
+	xfs_agnumber_t		stream_agno = NULLAGNUMBER;
 	bool			ok_alloc = true;
 	bool			low_space = false;
+	bool			confine = false;
 	int			flags;
 	int			error = 0;
 
 	start_agno = xfs_dialloc_pick_ag(mp, args->pip, mode);
+
+	/* a write stream on the parent names the AG for its new inodes */
+	if (args->pip) {
+		stream_agno = READ_ONCE(args->pip->i_stream_group);
+		confine = READ_ONCE(args->pip->i_stream_confine);
+	}
+	if (stream_agno < mp->m_maxagi)
+		start_agno = stream_agno;
+	else if (stream_agno == NULLAGNUMBER || !confine)
+		confine = false;
+	else
+		return -ENOSPC;
 
 	/*
 	 * If we have already hit the ceiling of inode blocks then clear
@@ -1954,6 +1968,8 @@ retry:
 			error = -EFSCORRUPTED;
 			break;
 		}
+		if (confine)
+			break;
 	}
 	if (pag)
 		xfs_perag_rele(pag);

@@ -121,6 +121,10 @@ xfs_inode_set_write_stream(
 		error = id;
 		goto out_unlock;
 	}
+	if (!S_ISREG(VFS_I(ip)->i_mode)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
 	if (ip->i_stream_group != NULLAGNUMBER) {
 		error = -EBUSY;
 		goto out_unlock;
