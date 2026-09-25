@@ -1906,6 +1906,14 @@ xfs_dialloc(
 
 	start_agno = xfs_dialloc_pick_ag(mp, args->pip, mode);
 
+	/* an allocation group set on the parent names the AG for new inodes */
+	if (args->pip) {
+		xfs_agnumber_t	alloc_agno = READ_ONCE(args->pip->i_alloc_group);
+
+		if (alloc_agno < mp->m_maxagi)
+			start_agno = alloc_agno;
+	}
+
 	/*
 	 * If we have already hit the ceiling of inode blocks then clear
 	 * ok_alloc so we scan all available agi structures for a free

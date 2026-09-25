@@ -1288,7 +1288,7 @@ xfs_ioc_set_alloc_group(
 		return -EFAULT;
 	if (ag.flags || ag.reserved)
 		return -EINVAL;
-	if (!S_ISREG(VFS_I(ip)->i_mode))
+	if (!S_ISREG(VFS_I(ip)->i_mode) && !S_ISDIR(VFS_I(ip)->i_mode))
 		return -EINVAL;
 	return xfs_inode_set_alloc_group(ip, ag.group);
 }
