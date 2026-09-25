@@ -91,6 +91,9 @@ typedef struct xfs_inode {
 	 */
 	xfs_agino_t		i_prev_unlinked;
 
+	/* in-memory allocation group target, NULLAGNUMBER if none */
+	uint32_t		i_alloc_group;
+
 	/* VFS inode */
 	struct inode		i_vnode;	/* embedded VFS inode */
 
@@ -673,6 +676,7 @@ int xfs_icreate_dqalloc(const struct xfs_icreate_args *args,
 		struct xfs_dquot **pdqpp);
 
 int xfs_inode_max_write_streams(struct xfs_inode *ip);
+int xfs_inode_set_alloc_group(struct xfs_inode *ip, uint32_t group);
 int xfs_inode_set_write_stream(struct xfs_inode *ip, int stream_fd);
 void xfs_inode_clear_write_stream(struct xfs_inode *ip);
 

@@ -2197,19 +2197,29 @@ xfs_bmap_rtalloc(
 	bool			initial_user_data =
 		ap->datatype & XFS_ALLOC_INITIAL_USER_DATA;
 	unsigned int		stream_id;
+	xfs_rgnumber_t		alloc_rgno;
 	int			error;
 
 	ASSERT(!xfs_has_zoned(ap->tp->t_mountp));
 
 	stream_id = READ_ONCE(VFS_I(ap->ip)->i_write_stream);
+	alloc_rgno = READ_ONCE(ap->ip->i_alloc_group);
+	if (!xfs_has_rtgroups(ap->ip->i_mount) ||
+	    alloc_rgno >= ap->ip->i_mount->m_sb.sb_rgcount)
+		alloc_rgno = NULLRGNUMBER;
 
 retry:
 	error = xfs_rtallocate_align(ap, &ralen, &raminlen, &prod, &noalign);
 	if (error)
 		return error;
 
-	if (xfs_bmap_adjacent(ap))
+	if (xfs_bmap_adjacent(ap) &&
+	    (alloc_rgno == NULLRGNUMBER ||
+	     xfs_rtb_to_rgno(ap->ip->i_mount, ap->blkno) == alloc_rgno))
 		bno_hint = ap->blkno;
+	else if (alloc_rgno != NULLRGNUMBER)
+		bno_hint = (xfs_rtblock_t)alloc_rgno <<
+			ap->ip->i_mount->m_groups[XG_TYPE_RTG].blklog;
 	else if (stream_id && xfs_has_rtgroups(ap->ip->i_mount))
 		bno_hint = xfs_bmap_write_stream_rtbno(ap->ip, stream_id);
 

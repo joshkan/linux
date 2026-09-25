@@ -62,6 +62,51 @@ xfs_inode_max_write_streams(
 	return write_stream_pool_count(&xfs_inode_buftarg(ip)->bt_stream_pool);
 }
 
+/* Start @ip's allocations in @group, or stop if it is NULLAGNUMBER */
+int
+xfs_inode_set_alloc_group(
+	struct xfs_inode	*ip,
+	uint32_t		group)
+{
+	struct xfs_mount	*mp = ip->i_mount;
+	uint32_t		nr_groups = 0;
+	int			error = 0;
+
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
+	if (group == NULLAGNUMBER) {
+		WRITE_ONCE(ip->i_alloc_group, NULLAGNUMBER);
+		goto out_unlock;
+	}
+
+	if (!XFS_IS_REALTIME_INODE(ip))
+		nr_groups = mp->m_sb.sb_agcount;
+	else if (xfs_has_rtgroups(mp) && !xfs_has_zoned(mp))
+		nr_groups = mp->m_sb.sb_rgcount;
+	if (!nr_groups) {
+		error = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+	if (group >= nr_groups) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+
+	/* filestreams and write streams choose the group themselves */
+	if (xfs_inode_is_filestream(ip)) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+	if (READ_ONCE(VFS_I(ip)->i_write_stream)) {
+		error = -EBUSY;
+		goto out_unlock;
+	}
+
+	WRITE_ONCE(ip->i_alloc_group, group);
+out_unlock:
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+	return error;
+}
+
 /* Bind the write stream named by @stream_fd to @ip */
 int
 xfs_inode_set_write_stream(
@@ -84,6 +129,10 @@ xfs_inode_set_write_stream(
 	id = write_stream_get_id(fd_file(f), &target->bt_stream_pool);
 	if (id < 0) {
 		error = id;
+		goto out_unlock;
+	}
+	if (ip->i_alloc_group != NULLAGNUMBER) {
+		error = -EBUSY;
 		goto out_unlock;
 	}
 

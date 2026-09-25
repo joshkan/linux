@@ -557,8 +557,9 @@ xfs_ioctl_setattr_xflags(
 	bool			rtflag = (fa->fsx_xflags & FS_XFLAG_REALTIME);
 	uint64_t		i_flags2;
 
-	/* refuse a filestream/realtime flag change while a stream is attached */
-	if (READ_ONCE(VFS_I(ip)->i_write_stream) &&
+	/* refuse a filestream/realtime flag change while placement is set */
+	if ((READ_ONCE(VFS_I(ip)->i_write_stream) ||
+	     ip->i_alloc_group != NULLAGNUMBER) &&
 	    ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) ||
 	     rtflag != XFS_IS_REALTIME_INODE(ip)))
 		return -EINVAL;
@@ -1273,6 +1274,42 @@ xfs_ioc_write_stream_set(
 	return xfs_inode_set_write_stream(ip, set.stream_fd);
 }
 
+static int
+xfs_ioc_set_alloc_group(
+	struct file		*filp,
+	void __user		*arg)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(filp));
+	struct xfs_alloc_group	ag;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (copy_from_user(&ag, arg, sizeof(ag)))
+		return -EFAULT;
+	if (ag.flags || ag.reserved)
+		return -EINVAL;
+	if (!S_ISREG(VFS_I(ip)->i_mode))
+		return -EINVAL;
+	return xfs_inode_set_alloc_group(ip, ag.group);
+}
+
+static int
+xfs_ioc_get_alloc_group(
+	struct file		*filp,
+	void __user		*arg)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(filp));
+	struct xfs_alloc_group	ag = { };
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	ag.group = ip->i_alloc_group;
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+
+	if (copy_to_user(arg, &ag, sizeof(ag)))
+		return -EFAULT;
+	return 0;
+}
+
 /*
  * These long-unused ioctls were removed from the official ioctl API in 5.17,
  * but retain these definitions so that we can log warnings about them.
@@ -1545,6 +1582,10 @@ xfs_file_ioctl(
 		return xfs_ioc_write_stream_alloc(filp);
 	case FS_IOC_WRITE_STREAM_SET:
 		return xfs_ioc_write_stream_set(filp, (void __user *)arg);
+	case XFS_IOC_SET_ALLOC_GROUP:
+		return xfs_ioc_set_alloc_group(filp, arg);
+	case XFS_IOC_GET_ALLOC_GROUP:
+		return xfs_ioc_get_alloc_group(filp, arg);
 
 	default:
 		return -ENOTTY;

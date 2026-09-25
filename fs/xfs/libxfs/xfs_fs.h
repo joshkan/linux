@@ -1192,6 +1192,20 @@ struct xfs_verify_media {
 #define XFS_VERIFY_MEDIA_FLAGS	(XFS_VERIFY_MEDIA_REPORT)
 
 /*
+ * The group a file's allocations start in: an AG, or an rtgroup for a
+ * realtime file.  Held in memory only: it is lost when the inode is
+ * evicted, which may happen once no file descriptor holds the file open,
+ * so it must be set again after the file is reopened.
+ */
+struct xfs_alloc_group {
+	__u32		group;		/* XFS_ALLOC_GROUP_NONE for none */
+	__u32		flags;		/* must be zero */
+	__u64		reserved;	/* must be zero */
+};
+
+#define XFS_ALLOC_GROUP_NONE	(~0U)
+
+/*
  * ioctl commands that are used by Linux filesystems
  */
 #define XFS_IOC_GETXFLAGS	FS_IOC_GETFLAGS
@@ -1234,6 +1248,8 @@ struct xfs_verify_media {
 #define XFS_IOC_HEALTH_FD_ON_MONITORED_FS \
 				_IOW ('X', 69, struct xfs_health_file_on_monitored_fs)
 #define XFS_IOC_VERIFY_MEDIA	_IOWR('X', 70, struct xfs_verify_media)
+#define XFS_IOC_SET_ALLOC_GROUP	_IOW ('X', 71, struct xfs_alloc_group)
+#define XFS_IOC_GET_ALLOC_GROUP	_IOR ('X', 72, struct xfs_alloc_group)
 
 /*
  * ioctl commands that replace IRIX syssgi()'s
