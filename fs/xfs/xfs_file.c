@@ -320,6 +320,11 @@ xfs_file_read_iter(
 	if (xfs_is_shutdown(mp))
 		return -EIO;
 
+	/* a device mapping can only be read into by a direct I/O bio */
+	if (iov_iter_is_dmabuf_map(to) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT)))
+		return -EOPNOTSUPP;
+
 	if (IS_DAX(inode))
 		ret = xfs_file_dax_read(iocb, to);
 	else if (iocb->ki_flags & IOCB_DIRECT)
@@ -1176,6 +1181,16 @@ xfs_file_write_iter(
 			return ret;
 	}
 
+	/*
+	 * A device mapping can only be written from by a direct I/O bio.
+	 * Zoned writes are placed and split for zone append at submission,
+	 * which has not been validated with dma-buf backed bios yet.
+	 */
+	if (iov_iter_is_dmabuf_map(from) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT) ||
+	     xfs_is_zoned_inode(ip)))
+		return -EOPNOTSUPP;
+
 	if (IS_DAX(inode))
 		return xfs_file_dax_write(iocb, from);
 
@@ -1189,11 +1204,30 @@ xfs_file_write_iter(
 		ret = xfs_file_dio_write(iocb, from);
 		if (ret != -ENOTBLK)
 			return ret;
+		/* the page cache cannot copy from a device mapping */
+		if (iov_iter_is_dmabuf_map(from))
+			return -EOPNOTSUPP;
 	}
 
 	if (xfs_is_zoned_inode(ip))
 		return xfs_file_buffered_write_zoned(iocb, from);
 	return xfs_file_buffered_write(iocb, from);
+}
+
+/*
+ * A realtime file's data lives on the realtime device, anything else on the
+ * data device.  If a file moves between them after registration, the block
+ * layer refuses the I/O rather than send the mapping to the wrong device.
+ */
+static int
+xfs_file_init_dma_buf_io_ctx(
+	struct file		*file,
+	struct dma_buf_io_ctx	*ctx)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(file));
+
+	return bdev_init_dma_buf_io_ctx(file, xfs_inode_buftarg(ip)->bt_bdev,
+					ctx);
 }
 
 /* Does this file, inode, or mount want synchronous writes? */
@@ -2157,6 +2191,7 @@ const struct file_operations xfs_file_operations = {
 	.llseek		= xfs_file_llseek,
 	.read_iter	= xfs_file_read_iter,
 	.write_iter	= xfs_file_write_iter,
+	.init_dma_buf_io_ctx = xfs_file_init_dma_buf_io_ctx,
 	.splice_read	= xfs_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.iopoll		= iocb_bio_iopoll,
