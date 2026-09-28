@@ -983,6 +983,13 @@ int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
 		return -EINVAL;
 	if (!disk->fops->init_dma_buf_io_ctx)
 		return -EOPNOTSUPP;
+	/*
+	 * Integrity generation and verification read the payload from the CPU,
+	 * and file systems bounce direct I/O through CPU copies for devices
+	 * that need stable pages.  Neither can reach a device mapping.
+	 */
+	if (bdev_stable_writes(bdev))
+		return -EOPNOTSUPP;
 	ret = disk->fops->init_dma_buf_io_ctx(bdev, ctx);
 	if (!ret)
 		ctx->bdev = bdev;
