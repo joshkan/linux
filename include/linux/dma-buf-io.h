@@ -4,6 +4,7 @@
 
 #include <linux/dma-buf.h>
 
+struct block_device;
 struct dma_buf_io_ctx;
 struct dma_buf_io_map;
 
@@ -62,6 +63,15 @@ struct dma_buf_io_ctx {
 
 	void					*dev_priv;
 	const struct dma_buf_io_ops		*dev_ops;
+
+	/*
+	 * The block device the mapping was made for, when the ctx was attached
+	 * through bdev_init_dma_buf_io_ctx().  A file system may pick a device
+	 * per file, and a file's data can move to another device afterwards.
+	 * Only valid while I/O can be issued through the registering file:
+	 * the ctx itself may outlive it.
+	 */
+	struct block_device			*bdev;
 };
 
 int dma_buf_io_ctx_create(struct file *file,

@@ -20,6 +20,7 @@
 #include <linux/iomap.h>
 #include <linux/module.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/dma-buf-io.h>
 #include "blk.h"
 
 static inline struct inode *bdev_file_inode(struct file *file)
@@ -963,17 +964,36 @@ static int blkdev_mmap_prepare(struct vm_area_desc *desc)
 	return generic_file_mmap_prepare(desc);
 }
 
-static int blkdev_init_dma_buf_io_ctx(struct file *file,
-				      struct dma_buf_io_ctx *ctx)
+/**
+ * bdev_init_dma_buf_io_ctx - attach a dma-buf I/O context to a block device
+ * @file: the file the I/O will be issued through, which must be O_DIRECT
+ * @bdev: the block device that will carry the I/O
+ * @ctx: the context to initialise
+ *
+ * For a block device file @bdev is the device itself.  A file system passes
+ * the device the file's data lives on.
+ */
+int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
+			     struct dma_buf_io_ctx *ctx)
 {
-	struct block_device *bdev = file_bdev(file);
 	struct gendisk *disk = bdev->bd_disk;
+	int ret;
 
 	if (!(file->f_flags & O_DIRECT))
 		return -EINVAL;
 	if (!disk->fops->init_dma_buf_io_ctx)
 		return -EOPNOTSUPP;
-	return disk->fops->init_dma_buf_io_ctx(bdev, ctx);
+	ret = disk->fops->init_dma_buf_io_ctx(bdev, ctx);
+	if (!ret)
+		ctx->bdev = bdev;
+	return ret;
+}
+EXPORT_SYMBOL_GPL(bdev_init_dma_buf_io_ctx);
+
+static int blkdev_init_dma_buf_io_ctx(struct file *file,
+				      struct dma_buf_io_ctx *ctx)
+{
+	return bdev_init_dma_buf_io_ctx(file, file_bdev(file), ctx);
 }
 
 const struct file_operations def_blk_fops = {
