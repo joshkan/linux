@@ -80,6 +80,9 @@ static ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 	if (!ext4_should_use_dio(iocb, to)) {
 		inode_unlock_shared(inode);
+		/* a device mapping has no buffered path to fall back to */
+		if (iov_iter_is_dmabuf_map(to))
+			return -EOPNOTSUPP;
 		/*
 		 * Fallback to buffered I/O if the operation being performed on
 		 * the inode is not supported by direct I/O. The IOCB_DIRECT
@@ -138,6 +141,11 @@ static ssize_t ext4_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 	if (!iov_iter_count(to))
 		return 0; /* skip atime */
+
+	/* a device mapping can only be read into by a direct I/O bio */
+	if (iov_iter_is_dmabuf_map(to) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT)))
+		return -EOPNOTSUPP;
 
 #ifdef CONFIG_FS_DAX
 	if (IS_DAX(inode))
@@ -612,6 +620,9 @@ static ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			inode_unlock_shared(inode);
 		else
 			inode_unlock(inode);
+		/* a device mapping has no buffered path to fall back to */
+		if (iov_iter_is_dmabuf_map(from))
+			return -EOPNOTSUPP;
 		return ext4_buffered_write_iter(iocb, from);
 	}
 
@@ -676,6 +687,10 @@ out:
 		 * writes.
 		 */
 		WARN_ON_ONCE(iocb->ki_flags & IOCB_ATOMIC);
+
+		/* the rest cannot complete through the page cache */
+		if (iov_iter_is_dmabuf_map(from))
+			return ret ? ret : -EOPNOTSUPP;
 
 		offset = iocb->ki_pos;
 		err = ext4_buffered_write_iter(iocb, from);
@@ -772,6 +787,11 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ret = ext4_emergency_state(inode->i_sb);
 	if (unlikely(ret))
 		return ret;
+
+	/* a device mapping can only be written from by a direct I/O bio */
+	if (iov_iter_is_dmabuf_map(from) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT)))
+		return -EOPNOTSUPP;
 
 #ifdef CONFIG_FS_DAX
 	if (IS_DAX(inode))
@@ -1032,10 +1052,25 @@ loff_t ext4_llseek(struct file *file, loff_t offset, int whence)
 	return vfs_setpos(file, offset, maxbytes);
 }
 
+static int ext4_file_init_dma_buf_io_ctx(struct file *file,
+					 struct dma_buf_io_ctx *ctx)
+{
+	struct inode *inode = file_inode(file);
+
+	/*
+	 * Without inline encryption hardware, blk-crypto encrypts and decrypts
+	 * the payload from the CPU, which a device mapping bypasses.
+	 */
+	if (IS_ENCRYPTED(inode))
+		return -EOPNOTSUPP;
+	return bdev_init_dma_buf_io_ctx(file, inode->i_sb->s_bdev, ctx);
+}
+
 const struct file_operations ext4_file_operations = {
 	.llseek		= ext4_llseek,
 	.read_iter	= ext4_file_read_iter,
 	.write_iter	= ext4_file_write_iter,
+	.init_dma_buf_io_ctx = ext4_file_init_dma_buf_io_ctx,
 	.iopoll		= iocb_bio_iopoll,
 	.unlocked_ioctl = ext4_ioctl,
 #ifdef CONFIG_COMPAT
