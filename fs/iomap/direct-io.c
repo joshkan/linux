@@ -595,8 +595,13 @@ out:
 
 static int iomap_dio_hole_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 {
-	loff_t length = iov_iter_zero(iomap_length(iter), dio->submit.iter);
+	loff_t length;
 
+	/* a device mapping cannot be zeroed from the CPU */
+	if (iov_iter_is_dmabuf_map(dio->submit.iter))
+		return -EOPNOTSUPP;
+
+	length = iov_iter_zero(iomap_length(iter), dio->submit.iter);
 	dio->size += length;
 	if (!length)
 		return -EFAULT;
@@ -611,6 +616,10 @@ static int iomap_dio_inline_iter(struct iomap_iter *iomi, struct iomap_dio *dio)
 	loff_t length = iomap_length(iomi);
 	loff_t pos = iomi->pos;
 	u64 copied;
+
+	/* inline data is copied from the CPU, which a device mapping bypasses */
+	if (iov_iter_is_dmabuf_map(iter))
+		return -EOPNOTSUPP;
 
 	if (WARN_ON_ONCE(!inline_data))
 		return -EIO;
@@ -709,6 +718,10 @@ __iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 
 	if (!iomi.len)
 		return NULL;
+
+	/* bouncing copies the data from the CPU, which a device mapping bypasses */
+	if (iov_iter_is_dmabuf_map(iter) && (dio_flags & IOMAP_DIO_BOUNCE))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	dio = kmalloc_obj(*dio);
 	if (!dio)
