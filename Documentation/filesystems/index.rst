@@ -37,6 +37,7 @@ algorithms work.
    sharedsubtree
    idmappings
    iomap/index
+   write-streams
 
    automount-support
 
