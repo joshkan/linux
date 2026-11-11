@@ -1249,38 +1249,9 @@ static unsigned int nvme_pci_dmabuf_sgl_nents(struct request *req)
 {
 	struct bio *bio = req->bio;
 	struct nvme_dmabuf_map *map = to_nvme_dmabuf_map(bio->bi_dmabuf_map);
-	struct scatterlist *sg;
-	unsigned long tmp;
-	size_t offset = bio->bi_iter.bi_offset;
-	size_t remaining = blk_rq_payload_bytes(req);
-	unsigned int nents = 0;
 
-	for_each_sgtable_dma_sg(map->sgt, sg, tmp) {
-		size_t sg_len = sg_dma_len(sg);
-
-		if (!remaining)
-			break;
-		if (offset >= sg_len) {
-			offset -= sg_len;
-			continue;
-		}
-
-		sg_len -= offset;
-		offset = 0;
-
-		do {
-			size_t chunk = min(remaining, sg_len);
-
-			nents++;
-			sg_len -= chunk;
-			remaining -= chunk;
-		} while (sg_len && remaining);
-	}
-
-	if (unlikely(remaining))
-		return 0;
-
-	return nents;
+	return nvme_dmabuf_sgt_nents(map->sgt, bio->bi_iter.bi_offset,
+				     blk_rq_payload_bytes(req));
 }
 
 static blk_status_t nvme_rq_setup_dmabuf_sgl(struct request *req,
@@ -3790,7 +3761,8 @@ static int nvme_pci_init_dma_buf_io_ctx(struct nvme_ctrl *ctrl,
 {
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
 
-	return nvme_init_dma_buf_io_ctx(ctrl, &dev->dmabufs, ctx);
+	return nvme_init_dma_buf_io_ctx(ctrl, &dev->dmabufs, dev->dev,
+					&nvme_pci_dma_buf_io_ops, ctx);
 }
 
 static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
@@ -4147,7 +4119,7 @@ static void nvme_remove(struct pci_dev *pdev)
 	nvme_stop_ctrl(&dev->ctrl);
 	nvme_remove_namespaces(&dev->ctrl);
 	nvme_dev_disable(dev, true);
-	nvme_pci_remove_dmabuf(&dev->dmabufs);
+	nvme_remove_dmabufs(&dev->dmabufs);
 	nvme_free_host_mem(dev);
 	nvme_dev_remove_admin(dev);
 	nvme_dbbuf_dma_free(dev);
