@@ -821,6 +821,13 @@ static int nvme_rdma_configure_admin_queue(struct nvme_rdma_ctrl *ctrl,
 	ctrl->device = ctrl->queues[0].device;
 	ctrl->ctrl.numa_node = ibdev_to_node(ctrl->device->dev);
 
+	/*
+	 * A reconnect can come back through a different HCA.  Buffers mapped
+	 * for the old one can't be used anymore.
+	 */
+	nvme_remove_stale_dmabufs(&ctrl->dmabufs,
+				  ctrl->device->dev->dma_device);
+
 	/* T10-PI support */
 	if (ctrl->device->dev->attrs.kernel_cap_flags &
 	    IBK_INTEGRITY_HANDOVER)

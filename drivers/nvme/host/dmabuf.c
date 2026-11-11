@@ -53,6 +53,28 @@ void __nvme_remove_dmabufs(struct nvme_dma_buf_list *list)
 }
 EXPORT_SYMBOL_GPL(__nvme_remove_dmabufs);
 
+/*
+ * Detach the contexts mapped for a device other than @dma_dev, for a transport
+ * that came back on a different device.  Their I/O fails from now on.  The
+ * caller must have stopped all I/O.
+ */
+void __nvme_remove_stale_dmabufs(struct nvme_dma_buf_list *list,
+		struct device *dma_dev)
+{
+	struct nvme_dma_buf_io_ctx *ctx, *tmp;
+
+	mutex_lock(&list->lock);
+	list_for_each_entry_safe(ctx, tmp, &list->ctxs, list) {
+		if (ctx->dma_dev == dma_dev)
+			continue;
+		dma_buf_io_detach(ctx->base);
+		dma_buf_detach(ctx->base->dmabuf, ctx->attach);
+		list_del_init(&ctx->list);
+	}
+	mutex_unlock(&list->lock);
+}
+EXPORT_SYMBOL_GPL(__nvme_remove_stale_dmabufs);
+
 int nvme_init_dma_buf_io_ctx_locked(struct nvme_ctrl *ctrl,
 		struct nvme_dma_buf_list *buf_list, struct device *dma_dev,
 		const struct dma_buf_io_ops *ops, struct dma_buf_io_ctx *ctx)

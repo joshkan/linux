@@ -28,6 +28,8 @@ struct nvme_dma_buf_io_ctx {
 
 void nvme_dma_buf_io_release(struct dma_buf_io_ctx *base_ctx);
 void __nvme_remove_dmabufs(struct nvme_dma_buf_list *list);
+void __nvme_remove_stale_dmabufs(struct nvme_dma_buf_list *list,
+		struct device *dma_dev);
 int nvme_init_dma_buf_io_ctx_locked(struct nvme_ctrl *ctrl,
 		struct nvme_dma_buf_list *buf_list, struct device *dma_dev,
 		const struct dma_buf_io_ops *ops, struct dma_buf_io_ctx *ctx);
@@ -38,6 +40,13 @@ static inline void nvme_remove_dmabufs(struct nvme_dma_buf_list *list)
 {
 	if (IS_ENABLED(CONFIG_DMA_SHARED_BUFFER))
 		__nvme_remove_dmabufs(list);
+}
+
+static inline void nvme_remove_stale_dmabufs(struct nvme_dma_buf_list *list,
+		struct device *dma_dev)
+{
+	if (IS_ENABLED(CONFIG_DMA_SHARED_BUFFER))
+		__nvme_remove_stale_dmabufs(list, dma_dev);
 }
 
 static inline int nvme_init_dma_buf_io_ctx(struct nvme_ctrl *ctrl,
