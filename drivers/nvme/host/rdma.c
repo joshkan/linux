@@ -18,6 +18,7 @@
 #include <linux/mutex.h>
 #include <linux/async.h>
 #include <linux/scatterlist.h>
+#include <linux/dma-resv.h>
 #include <linux/nvme.h>
 #include <linux/unaligned.h>
 
@@ -27,6 +28,7 @@
 
 #include "nvme.h"
 #include "fabrics.h"
+#include "dmabuf.h"
 
 
 #define NVME_RDMA_CM_TIMEOUT_MS		3000		/* 3 second */
@@ -139,6 +141,8 @@ struct nvme_rdma_ctrl {
 	struct nvme_ctrl	ctrl;
 	bool			use_inline_data;
 	u32			io_queues[HCTX_MAX_TYPES];
+
+	struct nvme_dma_buf_list dmabufs;
 };
 
 static inline struct nvme_rdma_ctrl *to_rdma_ctrl(struct nvme_ctrl *ctrl)
@@ -789,7 +793,17 @@ static void nvme_rdma_destroy_admin_queue(struct nvme_rdma_ctrl *ctrl)
 				sizeof(struct nvme_command), DMA_TO_DEVICE);
 		ctrl->async_event_sqe.data = NULL;
 	}
+
+	/*
+	 * The admin queue holds the controller's last reference on
+	 * ctrl->device.  dma-buf registration reads ctrl->device under
+	 * dmabufs.lock after seeing the controller LIVE, and the state has
+	 * already moved on by now, so this waits out any registration still
+	 * in progress.
+	 */
+	mutex_lock(&ctrl->dmabufs.lock);
 	nvme_rdma_free_queue(&ctrl->queues[0]);
+	mutex_unlock(&ctrl->dmabufs.lock);
 }
 
 static int nvme_rdma_configure_admin_queue(struct nvme_rdma_ctrl *ctrl,
@@ -1258,8 +1272,10 @@ static void nvme_rdma_dma_unmap_req(struct ib_device *ibdev, struct request *rq)
 				      NVME_INLINE_METADATA_SG_CNT);
 	}
 
-	ib_dma_unmap_sg(ibdev, req->data_sgl.sg_table.sgl, req->data_sgl.nents,
-			rq_dma_dir(rq));
+	/* a dma-buf is mapped for as long as it is registered */
+	if (!blk_mq_rq_is_dmabuf(rq))
+		ib_dma_unmap_sg(ibdev, req->data_sgl.sg_table.sgl,
+				req->data_sgl.nents, rq_dma_dir(rq));
 	sg_free_table_chained(&req->data_sgl.sg_table, NVME_INLINE_SG_CNT);
 }
 
@@ -1557,6 +1573,162 @@ out_free_table:
 	return ret;
 }
 
+#ifdef CONFIG_DMA_SHARED_BUFFER
+struct nvme_rdma_dmabuf_map {
+	struct dma_buf_io_map	base;
+	struct sg_table		*sgt;
+};
+
+static inline struct nvme_rdma_dmabuf_map *
+to_rdma_dmabuf_map(struct dma_buf_io_map *map)
+{
+	return container_of(map, struct nvme_rdma_dmabuf_map, base);
+}
+
+/*
+ * Fill the request's scatterlist with the part of the registered buffer that
+ * the request covers.  The buffer is already DMA mapped for the HCA, so only
+ * the DMA address and length are set, and the result goes to the same memory
+ * registration paths as a regular request.
+ */
+static int nvme_rdma_dmabuf_map_req(struct nvme_rdma_queue *queue,
+		struct request *rq, int *count)
+{
+	struct nvme_rdma_request *req = blk_mq_rq_to_pdu(rq);
+	struct dma_buf_io_map *base = rq->bio->bi_dmabuf_map;
+	struct nvme_dma_buf_io_ctx *nvme_ctx = base->ctx->dev_priv;
+	struct sg_table *sgt = to_rdma_dmabuf_map(base)->sgt;
+	size_t offset = rq->bio->bi_iter.bi_offset;
+	size_t remaining = blk_rq_payload_bytes(rq);
+	struct scatterlist *sg, *dst;
+	unsigned int nents;
+	unsigned long tmp;
+
+	/* contexts are dropped when the controller moves to another HCA */
+	if (WARN_ON_ONCE(nvme_ctx->dma_dev != queue->device->dev->dma_device))
+		return -EIO;
+	/* registration refuses devices with integrity */
+	if (WARN_ON_ONCE(req->use_sig_mr))
+		return -EIO;
+
+	nents = nvme_dmabuf_sgt_nents(sgt, offset, remaining);
+	if (!nents)
+		return -EIO;
+
+	req->data_sgl.sg_table.sgl = (struct scatterlist *)(req + 1);
+	if (sg_alloc_table_chained(&req->data_sgl.sg_table, nents,
+			req->data_sgl.sg_table.sgl, NVME_INLINE_SG_CNT))
+		return -ENOMEM;
+
+	dst = req->data_sgl.sg_table.sgl;
+	for_each_sgtable_dma_sg(sgt, sg, tmp) {
+		size_t sg_len = sg_dma_len(sg);
+		size_t chunk;
+
+		if (!remaining)
+			break;
+		if (offset >= sg_len) {
+			offset -= sg_len;
+			continue;
+		}
+
+		chunk = min(remaining, sg_len - offset);
+		/* no pages: the table was zeroed, set the lengths only */
+		dst->length = chunk;
+		sg_dma_address(dst) = sg_dma_address(sg) + offset;
+		sg_dma_len(dst) = chunk;
+		if (sg_dma_is_bus_address(sg))
+			sg_dma_mark_bus_address(dst);
+		dst = sg_next(dst);
+		remaining -= chunk;
+		offset = 0;
+	}
+
+	req->data_sgl.nents = nents;
+	*count = nents;
+	return 0;
+}
+
+static struct dma_buf_io_map *nvme_rdma_dma_buf_io_map(struct dma_buf_io_ctx *ctx)
+{
+	struct nvme_dma_buf_io_ctx *nvme_ctx = ctx->dev_priv;
+	struct nvme_rdma_dmabuf_map *map;
+	struct sg_table *sgt;
+	int ret;
+
+	dma_resv_assert_held(ctx->dmabuf->resv);
+
+	map = kzalloc_obj(*map);
+	if (!map)
+		return ERR_PTR(-ENOMEM);
+
+	sgt = dma_buf_map_attachment(nvme_ctx->attach, ctx->dir);
+	if (IS_ERR(sgt)) {
+		kfree(map);
+		return ERR_CAST(sgt);
+	}
+
+	ret = dma_buf_io_init_map(ctx, &map->base, sgt);
+	if (ret) {
+		dma_buf_unmap_attachment(nvme_ctx->attach, sgt, ctx->dir);
+		kfree(map);
+		return ERR_PTR(ret);
+	}
+	map->sgt = sgt;
+	return &map->base;
+}
+
+static void nvme_rdma_dma_buf_io_unmap(struct dma_buf_io_ctx *ctx,
+		struct dma_buf_io_map *base)
+{
+	struct nvme_dma_buf_io_ctx *nvme_ctx = ctx->dev_priv;
+	struct nvme_rdma_dmabuf_map *map = to_rdma_dmabuf_map(base);
+
+	dma_resv_assert_held(ctx->dmabuf->resv);
+
+	dma_buf_unmap_attachment(nvme_ctx->attach, map->sgt, ctx->dir);
+	kfree(map);
+}
+
+static const struct dma_buf_io_ops nvme_rdma_dma_buf_io_ops = {
+	.map		= nvme_rdma_dma_buf_io_map,
+	.unmap		= nvme_rdma_dma_buf_io_unmap,
+	.release	= nvme_dma_buf_io_release,
+};
+
+static int nvme_rdma_init_dma_buf_io_ctx(struct nvme_ctrl *nctrl,
+		struct dma_buf_io_ctx *ctx)
+{
+	struct nvme_rdma_ctrl *ctrl = to_rdma_ctrl(nctrl);
+	struct ib_device *ibdev;
+	int ret = -ENODEV;
+
+	mutex_lock(&ctrl->dmabufs.lock);
+	if (nvme_ctrl_state(nctrl) != NVME_CTRL_LIVE)
+		goto out_unlock;
+	ibdev = ctrl->device->dev;
+
+	/* software RDMA devices copy with the CPU */
+	ret = -EOPNOTSUPP;
+	if (ib_uses_virt_dma(ibdev))
+		goto out_unlock;
+
+	ret = nvme_init_dma_buf_io_ctx_locked(nctrl, &ctrl->dmabufs,
+			ibdev->dma_device, &nvme_rdma_dma_buf_io_ops, ctx);
+out_unlock:
+	mutex_unlock(&ctrl->dmabufs.lock);
+	return ret;
+}
+#else
+static int nvme_rdma_dmabuf_map_req(struct nvme_rdma_queue *queue,
+		struct request *rq, int *count)
+{
+	return -EOPNOTSUPP;
+}
+
+#define nvme_rdma_init_dma_buf_io_ctx	NULL
+#endif /* CONFIG_DMA_SHARED_BUFFER */
+
 static int nvme_rdma_map_data(struct nvme_rdma_queue *queue,
 		struct request *rq, struct nvme_command *c)
 {
@@ -1574,7 +1746,10 @@ static int nvme_rdma_map_data(struct nvme_rdma_queue *queue,
 	if (!blk_rq_nr_phys_segments(rq))
 		return nvme_rdma_set_sg_null(c);
 
-	ret = nvme_rdma_dma_map_req(ibdev, rq, &count, &pi_count);
+	if (blk_mq_rq_is_dmabuf(rq))
+		ret = nvme_rdma_dmabuf_map_req(queue, rq, &count);
+	else
+		ret = nvme_rdma_dma_map_req(ibdev, rq, &count, &pi_count);
 	if (unlikely(ret))
 		return ret;
 
@@ -2196,9 +2371,12 @@ static void nvme_rdma_shutdown_ctrl(struct nvme_rdma_ctrl *ctrl, bool shutdown)
 	nvme_rdma_teardown_admin_queue(ctrl, shutdown);
 }
 
-static void nvme_rdma_delete_ctrl(struct nvme_ctrl *ctrl)
+static void nvme_rdma_delete_ctrl(struct nvme_ctrl *nctrl)
 {
-	nvme_rdma_shutdown_ctrl(to_rdma_ctrl(ctrl), true);
+	struct nvme_rdma_ctrl *ctrl = to_rdma_ctrl(nctrl);
+
+	nvme_rdma_shutdown_ctrl(ctrl, true);
+	nvme_remove_dmabufs(&ctrl->dmabufs);
 }
 
 static void nvme_rdma_reset_ctrl_work(struct work_struct *work)
@@ -2249,6 +2427,7 @@ static const struct nvme_ctrl_ops nvme_rdma_ctrl_ops = {
 	.stop_ctrl		= nvme_rdma_stop_ctrl,
 	.get_virt_boundary	= nvme_get_virt_boundary,
 	.supports_pci_p2pdma	= nvme_rdma_supports_pci_p2pdma,
+	.init_dma_buf_io_ctx	= nvme_rdma_init_dma_buf_io_ctx,
 };
 
 /*
@@ -2332,6 +2511,7 @@ static struct nvme_rdma_ctrl *nvme_rdma_alloc_ctrl(struct device *dev,
 			nvme_rdma_reconnect_ctrl_work);
 	INIT_WORK(&ctrl->err_work, nvme_rdma_error_recovery_work);
 	INIT_WORK(&ctrl->ctrl.reset_work, nvme_rdma_reset_ctrl_work);
+	nvme_init_buf_list(&ctrl->dmabufs);
 
 	ctrl->ctrl.queue_count = opts->nr_io_queues + opts->nr_write_queues +
 				opts->nr_poll_queues + 1;
