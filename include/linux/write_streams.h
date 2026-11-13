@@ -6,6 +6,7 @@
 #include <linux/types.h>
 
 struct file;
+struct inode;
 
 /* i_write_stream value of an inode that has no write stream */
 #define WRITE_STREAM_NOT_SET	0
@@ -28,5 +29,10 @@ write_stream_pool_count(const struct write_stream_pool *pool)
 
 int  write_stream_pool_init(struct write_stream_pool *pool, unsigned int nr);
 void write_stream_pool_destroy(struct write_stream_pool *pool);
+
+typedef struct write_stream_pool *(*write_stream_pool_fn)(struct inode *inode);
+
+long write_stream_ioctl(struct file *file, unsigned int cmd,
+			void __user *argp, write_stream_pool_fn pool_fn);
 
 #endif /* _LINUX_WRITE_STREAMS_H */
