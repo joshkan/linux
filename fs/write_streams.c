@@ -2,11 +2,13 @@
 /* Generic write-stream fd management. */
 #include <linux/anon_inodes.h>
 #include <linux/bitmap.h>
+#include <linux/capability.h>
 #include <linux/err.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
 #include <linux/write_streams.h>
 
 #include "internal.h"
@@ -161,4 +163,119 @@ int inode_set_write_stream(struct inode *inode, u16 id)
 	WRITE_ONCE(inode->i_write_stream, id);
 	spin_unlock(&inode->i_lock);
 	return 0;
+}
+
+/* The pool serving @inode, or NULL if @inode cannot use write streams. */
+static struct write_stream_pool *inode_write_stream_pool(struct inode *inode)
+{
+	return inode->i_sb->s_op->write_stream_pool(inode);
+}
+
+static int ioctl_write_stream_get_max(struct file *file, __u32 __user *argp)
+{
+	struct write_stream_pool *pool = inode_write_stream_pool(file_inode(file));
+
+	return put_user(pool ? write_stream_pool_count(pool) : 0, argp);
+}
+
+static int ioctl_write_stream_alloc(struct file *file)
+{
+	struct write_stream_pool *pool;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	pool = inode_write_stream_pool(file_inode(file));
+	if (!pool)
+		return -EOPNOTSUPP;
+	return write_stream_alloc_fd(pool, file);
+}
+
+static int ioctl_write_stream_attach(struct inode *inode, int stream_fd)
+{
+	CLASS(fd, f)(stream_fd);
+	struct write_stream_pool *pool;
+	int id, error;
+
+	if (fd_empty(f))
+		return -EBADF;
+
+	/*
+	 * The inode lock keeps the pool of @inode stable until the id is
+	 * attached: vfs_fileattr_set() holds it while flags that select the
+	 * pool change.
+	 */
+	inode_lock(inode);
+	pool = inode_write_stream_pool(inode);
+	if (!pool) {
+		error = -EINVAL;
+		goto out_unlock;
+	}
+	id = write_stream_get_id(fd_file(f), pool);
+	if (id < 0) {
+		error = id;
+		goto out_unlock;
+	}
+	error = inode_set_write_stream(inode, id);
+out_unlock:
+	inode_unlock(inode);
+	return error;
+}
+
+static int ioctl_write_stream_set(struct file *file,
+				  struct fs_write_stream_set __user *argp)
+{
+	struct inode *inode = file_inode(file);
+	struct fs_write_stream_set set;
+
+	if (!(file->f_mode & FMODE_WRITE))
+		return -EBADF;
+	if (copy_from_user(&set, argp, sizeof(set)))
+		return -EFAULT;
+	if (set.flags & ~FS_WRITE_STREAM_SET_CLEAR)
+		return -EINVAL;
+	if (!S_ISREG(inode->i_mode))
+		return -EINVAL;
+	if (!inode_owner_or_capable(file_mnt_idmap(file), inode))
+		return -EPERM;
+
+	if (!(set.flags & FS_WRITE_STREAM_SET_CLEAR))
+		return ioctl_write_stream_attach(inode, set.stream_fd);
+	if (set.stream_fd != -1)
+		return -EINVAL;
+
+	inode_lock(inode);
+	inode_set_write_stream(inode, WRITE_STREAM_NOT_SET);
+	inode_unlock(inode);
+	return 0;
+}
+
+/**
+ * write_stream_ioctl - handle the FS_IOC_WRITE_STREAM_* ioctls
+ * @file: file the ioctl is issued on
+ * @cmd: ioctl command
+ * @argp: ioctl argument
+ *
+ * GET_MAX and ALLOC work on regular files and directories, SET on regular
+ * files only.  Anything else, and any filesystem without
+ * ->write_stream_pool, is left to the file's own ioctl handler.
+ */
+long write_stream_ioctl(struct file *file, unsigned int cmd,
+			void __user *argp)
+{
+	struct inode *inode = file_inode(file);
+
+	if (!inode->i_sb->s_op->write_stream_pool)
+		return -ENOIOCTLCMD;
+	if (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode))
+		return -ENOIOCTLCMD;
+
+	switch (cmd) {
+	case FS_IOC_WRITE_STREAM_GET_MAX:
+		return ioctl_write_stream_get_max(file, argp);
+	case FS_IOC_WRITE_STREAM_ALLOC:
+		return ioctl_write_stream_alloc(file);
+	case FS_IOC_WRITE_STREAM_SET:
+		return ioctl_write_stream_set(file, argp);
+	}
+	return -ENOIOCTLCMD;
 }

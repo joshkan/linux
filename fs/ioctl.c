@@ -571,6 +571,11 @@ static int do_vfs_ioctl(struct file *filp, unsigned int fd,
 	case FS_IOC_GETFSSYSFSPATH:
 		return ioctl_get_fs_sysfs_path(filp, argp);
 
+	case FS_IOC_WRITE_STREAM_GET_MAX:
+	case FS_IOC_WRITE_STREAM_ALLOC:
+	case FS_IOC_WRITE_STREAM_SET:
+		return write_stream_ioctl(filp, cmd, argp);
+
 	default:
 		if (S_ISREG(inode->i_mode) && !IS_ANON_FILE(inode))
 			return file_ioctl(filp, cmd, argp);

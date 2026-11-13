@@ -34,6 +34,7 @@ struct unicode_map;
 struct user_namespace;
 struct workqueue_struct;
 struct writeback_control;
+struct write_stream_pool;
 struct xattr_handler;
 struct fserror_event;
 
@@ -129,6 +130,13 @@ struct super_operations {
 
 	/* Report a filesystem error */
 	void (*report_error)(const struct fserror_event *event);
+
+	/*
+	 * Return the write stream pool that serves the data of @inode, or
+	 * NULL if @inode cannot use write streams.  May sleep.  The inode
+	 * lock is held when called for FS_IOC_WRITE_STREAM_SET.
+	 */
+	struct write_stream_pool *(*write_stream_pool)(struct inode *inode);
 };
 
 /* A superblock's claim on a device, see fs/super.c. */
